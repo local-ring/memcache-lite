@@ -77,10 +77,11 @@ def handle_client(connectionSocket, addr):
             while "\r\n" in buffer:  # check if there is a complete command in the buffer
                 command, buffer = buffer.split("\r\n", 1) # get the first complete command
                 args = command.split()
+                print(f"Command: {args}")
+                print(f"Buffer: {buffer}")  
 
                 if args[0].lower() == "get":
                     sem.acquireRead()
-
                     key = args[1]
                     with open("serverStorage.txt", "r") as cache:
                         dataCached = json.load(cache)
@@ -95,16 +96,24 @@ def handle_client(connectionSocket, addr):
                     sem.releaseRead()
 
                 elif args[0].lower() == "set":
-                    sem.acquireWrite()
-
-                    key, flags, exptime, bytes = args[1], args[2], args[3], int(args[4])
-                    key, _, _, bytes = args[1], args[2], args[3], int(args[4])
-                    # our dear memcache client sometimes include noreply argument
-                    noreply = (len(args) == 6 and args[5].lower() == "noreply")
-                    value = buffer[:bytes]
-                    buffer = buffer[bytes+2:]  # +2 for \r\n after the value
-
                     # during the read and write, there is only one thread can access the file
+                    sem.acquireWrite()
+                    if len(args) < 4: # we are dealing with non-memcache client: set key bytes \r\n 
+                        key, bytes = args[1], int(args[2])
+                        connectionSocket.send("OK".encode())  # send OK to the client let it continue to send the value
+                        value = connectionSocket.recv(bytes).decode()
+                        if len(value) != bytes:
+                            connectionSocket.send("NOT-STORED\r\n".encode())
+                        noreply = False
+                        buffer = ""
+
+                    else: # we are dealing with memcache client: set key flags exptime bytes [noreply]\r\n
+                        key, _, _, bytes = args[1], args[2], args[3], int(args[4])
+                        # our dear memcache client sometimes include noreply argument
+                        noreply = (len(args) == 6 and args[5].lower() == "noreply")
+                        value = buffer[:bytes]
+                        buffer = buffer[bytes+2:]  # +2 for \r\n after the value
+
                     with open("serverStorage.txt", "r") as cache:
                         dataCached = json.load(cache)
 
@@ -113,9 +122,18 @@ def handle_client(connectionSocket, addr):
                         json.dump(dataCached, cache)
 
                     if not noreply:
-                        connectionSocket.send(b"STORED\r\n")
+                        connectionSocket.send("STORED\r\n".encode())
                     
                     sem.releaseWrite()
+                
+                elif args[0].lower() == "exit":
+                    print(f"Client {addr} is gone!")
+                    connectionSocket.close()
+                
+                else:
+                    print("Right now, we only support GET and SET commands.")
+                    connectionSocket.send("CONFUSED\r\n".encode())
+
                     
     except Exception as e:
         print(f"Error handling client {addr}: {e}")

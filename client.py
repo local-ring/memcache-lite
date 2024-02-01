@@ -29,9 +29,11 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def main():
     while 1:
-        command = input("Enter a command: ")
+        command = input("Enter a command: ") 
         if not command: # in case the user press return because of excitement
             continue
+        command += "\r\n"
+
         clientSocket.send(command.encode()) # first tell the server what command to execute even exit
         if command == "exit":
             print("Exiting the client!")
