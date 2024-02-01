@@ -37,7 +37,6 @@ class concurrencyLock:
             self.reader -= 1
             if self.reader == 0:
                 self.writerLock.release()
-                self.readerLock.release()
 
     def releaseWrite(self):
         self.writerLock.release() # other can write
