@@ -1,4 +1,4 @@
-from pymemcache.client import base
+from pymemcache.client.base import Client
 import socket
 
 # keep the same host and port number as the server
@@ -10,10 +10,12 @@ serverPort = 9889
 print(f"Server Port: {serverPort}")
 
 def test():
-    client = base.Client((hostIP, serverPort))
-    client.set('some_key', 'some_value')
-    result = client.get('some_key')
-    print(f"Get result: {result}")
+    client = Client((hostIP, serverPort))
+    client.set('some_key', 'no_value') # just like me
+    client.set('high_key', '2')
+    result = client.get('some_key').decode()
+    print(f"Get result: {result if result else 'None'}")
+    print(client.get('high_key').decode())
     client.close()
 
 if __name__ == "__main__":

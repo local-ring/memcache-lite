@@ -1,6 +1,5 @@
 import socket
 import threading
-# import os
 import json
 import signal
 import sys
@@ -16,7 +15,35 @@ print(f"Host IP: {hostIP}")
 serverPort = 9889
 print(f"Server Port: {serverPort}")
 
-fileLock = threading.Lock() # ensure that only one thread can access the data file at a time
+class concurrencyLock:
+    def __init__(self):
+        self.reader = 0 # we allow mutliple readers
+        self.lock = threading.Lock() # protect reader counter
+        self.readerLock = threading.Lock()
+        self.writerLock = threading.Lock()
+    
+    def acquireRead(self):
+        with self.lock:
+            self.reader += 1
+            if self.reader == 1: # if the first reader, acquire the writer lock
+                self.writerLock.acquire()
+
+    def acquireWrite(self):
+        self.readerLock.acquire() # wait for all readers to release the lock
+        self.writerLock.acquire() # wait for all writers to release the lock
+
+    def releaseRead(self):
+        with self.lock:
+            self.reader -= 1
+            if self.reader == 0:
+                self.writerLock.release()
+                self.readerLock.release()
+
+    def releaseWrite(self):
+        self.writerLock.release() # other can write
+        self.readerLock.release() # other can read
+
+sem = concurrencyLock() # create a semaphore to control the access to the data file
 
 bufferSize = 1024
 backlog = 100
@@ -37,96 +64,64 @@ def main():
         clientThread.name = f"Client-{threading.active_count()-1} from {addr[1]}"
         print(f"{clientThread.name} has been started!")
 
-def delay():
-    # generate a random delay time 
-    delayTime = random.randint(0, 1)
-    time.sleep(delayTime)
-
-# make it memchae compatible
-def parseCommand(command, connectionSocket):
-    key, flags, exptime, bytes, noreply = command[1], command[2], command[3], command[4], command[5]
-    print(f"key: {key}, flags: {flags}, exptime: {exptime}, bytes: {bytes}, noreply: {noreply}")
-    connectionSocket.recv()
-    data_block = connectionSocket.recv(int(bytes)).decode()
-    return key, bytes, noreply, data_block
-
 def handle_client(connectionSocket, addr):
-    while 1:
-        read_line = connectionSocket.recv(bufferSize).decode()
-        if not read_line:
-            break
-        print(f"Received command: {read_line}")
+    global sem
+    # our dear memcache client will send a chunk of data at a time
+    buffer = ""
+    try:
+        while 1:
+            data = connectionSocket.recv(bufferSize)
+            if not data:
+                break  
+            buffer += data.decode()
 
-        # parse the command
-        longCommand = read_line.strip().split()
-        print(f"Long command: {longCommand}")
-        command = longCommand[0].lower()
+            while "\r\n" in buffer:  # check if there is a complete command in the buffer
+                command, buffer = buffer.split("\r\n", 1) # get the first complete command
+                args = command.split()
 
-        if not command:
-            break
+                if args[0].lower() == "get":
+                    sem.acquireRead()
 
-        if command[0] == "get": # the command is get <key> \r\n
-            key = command[1]
+                    key = args[1]
+                    with open("serverStorage.txt", "r") as cache:
+                        dataCached = json.load(cache)
 
-            delay() # delay before actually reading
+                    if key in dataCached:
+                        val = dataCached[key]
+                        response = f"VALUE {key} 0 {len(val)}\r\n{val}\r\nEND\r\n"
+                    else:
+                        response = "END\r\n"
+                    connectionSocket.send(response.encode())
 
-            with fileLock:
-                with open("serverStorage.txt", "r") as cache:
-                    for line in cache:
-                        dataCached =  json.loads(line)
+                    sem.releaseRead()
 
-            if key in dataCached:
-                val = dataCached[key]
-                """
-                we should respond with two lines
-                VALUE <key> <bytes> \r\n
-                <data block>\r\n 
-                END\r\n
-                """
-                response = "VALUE " + key + " " + str(len(val)) + "\r\n" + val + "\r\n" + "END\r\n"
-            else:
-                response = "No such key exists in the cache. \r\n END"
-            
-            connectionSocket.send(response.encode())  # send the response to the client
-            
-        elif command[0] == "set": # the command is  set <key> <value-size-bytes> \r\n <value> \r\n 
-            key, size = command[1], command[2]
-            if len(longCommand) == 5:
-                key, size, noreply, val = parseCommand(longCommand, connectionSocket)
-            else:
-                connectionSocket.send("OK".encode())  # send OK to the client let it continue to send the value
-                val = connectionSocket.recv(int(size)).decode()
-            if len(val) != int(size) and noreply != "noreply":
-                response = "NOT-STORED\r\n"
-                connectionSocket.send(response.encode())  # send the response to the client
-                continue
+                elif args[0].lower() == "set":
+                    sem.acquireWrite()
 
-            delay() # delay before actually writing
-            
-            prevData = {}
-            # during the read and write, there is only one thread can access the file
-            with fileLock:                 
-                with open("serverStorage.txt", "r") as cache:
-                    for line in cache:
-                        prevData = json.loads(line)
+                    key, flags, exptime, bytes = args[1], args[2], args[3], int(args[4])
+                    key, _, _, bytes = args[1], args[2], args[3], int(args[4])
+                    # our dear memcache client sometimes include noreply argument
+                    noreply = (len(args) == 6 and args[5].lower() == "noreply")
+                    value = buffer[:bytes]
+                    buffer = buffer[bytes+2:]  # +2 for \r\n after the value
 
-                # update the data or add the new pair
-                prevData[key] = val
-                with open("serverStorage.txt", "w") as cache:
-                    cache.write(json.dumps(prevData) + "\n")
-            response = "STORED\r\n"
-            if noreply != "noreply":
-                connectionSocket.send(response.encode())  # send the response to the client
-        
-        elif command[0] == "exit":  # TODO: figure out how to handle ^C
-            print("The client is gone!")
-            break
-            
-        else:
-            print("Not supported command: " + command[0])
-            print("Right now, we only support GET and SET command.")
-            connectionSocket.send("CONFUSED".encode())
+                    # during the read and write, there is only one thread can access the file
+                    with open("serverStorage.txt", "r") as cache:
+                        dataCached = json.load(cache)
 
+                    dataCached[key] = value
+                    with open("serverStorage.txt", "w") as cache:
+                        json.dump(dataCached, cache)
+
+                    if not noreply:
+                        connectionSocket.send(b"STORED\r\n")
+                    
+                    sem.releaseWrite()
+                    
+    except Exception as e:
+        print(f"Error handling client {addr}: {e}")
+    finally:
+        connectionSocket.close()
 
 # during testing I always have to stop the server by ^C
 # to make sure the server will close the socket and release the port
