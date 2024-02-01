@@ -63,6 +63,12 @@ def main():
         clientThread.name = f"Client-{threading.active_count()-1} from {addr[1]}"
         print(f"{clientThread.name} has been started!")
 
+# parser to generate command from memcache client 
+def parser(buffer): 
+    command, buffer = buffer.split("\r\n", 1) # get the first complete command
+    args = command.split()
+    return args, buffer
+
 def handle_client(connectionSocket, addr):
     global sem
     # our dear memcache client will send a chunk of data at a time
@@ -75,10 +81,7 @@ def handle_client(connectionSocket, addr):
             buffer += data.decode()
 
             while "\r\n" in buffer:  # check if there is a complete command in the buffer
-                command, buffer = buffer.split("\r\n", 1) # get the first complete command
-                args = command.split()
-                print(f"Command: {args}")
-                print(f"Buffer: {buffer}")  
+                args, buffer = parser(buffer)
 
                 if args[0].lower() == "get":
                     sem.acquireRead()
