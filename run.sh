@@ -4,4 +4,4 @@ python3 server.py &
 
 sleep 2
 
-python3 client.py
+python3 test.py
